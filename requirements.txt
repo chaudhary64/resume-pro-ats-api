@@ -2,5 +2,7 @@ fastapi
 uvicorn
 python-dotenv
 PyPDF2
+pytesseract
+pdf2image
+Pillow
 google-generativeai
-python-multipart

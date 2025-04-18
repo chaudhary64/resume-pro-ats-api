@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 import PyPDF2 as pdf
 import google.generativeai as genai
 
+import pytesseract
+from pdf2image import convert_from_bytes
+
 # Load environment variables
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -22,7 +25,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# (Optional) Allow CORS for all origins (for web frontends)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -104,7 +106,7 @@ def get_gemini_response(resume_text: str, job_description: str) -> str:
     Resume Text: {resume_text}
     """
 
-    model = genai.GenerativeModel('gemini-1.5-flash', generation_config={
+    model = genai.GenerativeModel('gemini-2.5-flash', generation_config={
         "response_mime_type": "application/json",
         "temperature": 0.1,
         "max_output_tokens": 4096
@@ -113,9 +115,20 @@ def get_gemini_response(resume_text: str, job_description: str) -> str:
     return result.text
 
 def extract_text_from_pdf(file: UploadFile) -> str:
+    # Try PyPDF2 first (for text-based PDFs)
+    file.file.seek(0)
     reader = pdf.PdfReader(file.file)
     text = "\n".join([page.extract_text() or "" for page in reader.pages])
-    return text
+    if text.strip():
+        return text
+
+    # If no text found, try OCR (for image-based PDFs)
+    file.file.seek(0)
+    images = convert_from_bytes(file.file.read())
+    ocr_text = ""
+    for image in images:
+        ocr_text += pytesseract.image_to_string(image)
+    return ocr_text
 
 @app.post("/analyze_resume")
 async def analyze_resume(
@@ -129,14 +142,20 @@ async def analyze_resume(
     try:
         resume_text = extract_text_from_pdf(file)
         if not resume_text.strip():
-            return JSONResponse(status_code=400, content={"error": "Could not extract text from PDF."})
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Could not extract text from PDF or image. Make sure your resume contains readable text."}
+            )
 
         gemini_response = get_gemini_response(resume_text, job_description)
         try:
             response_json = json.loads(gemini_response)
         except json.JSONDecodeError:
             # Return raw response for debugging if JSON parsing fails
-            return JSONResponse(status_code=500, content={"error": "Gemini output is not valid JSON.", "raw_response": gemini_response})
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Gemini output is not valid JSON.", "raw_response": gemini_response}
+            )
 
         return JSONResponse(content=response_json)
     except Exception as e:
